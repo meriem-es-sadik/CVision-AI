@@ -5,11 +5,7 @@ import fs from 'node:fs/promises'
 
 import { env } from '../config/env.js'
 import { ApiError } from '../utils/ApiError.js'
-
-const uploadRoot = env.uploads.dir
-
-// Ensure the upload directory exists before any request can reach multer.
-await fs.mkdir(uploadRoot, { recursive: true })
+import { logger } from '../utils/logger.js'
 
 // Only PDF and DOCX are accepted. The stored extension is derived from the
 // declared mimetype, never from the client-supplied filename.
@@ -20,9 +16,47 @@ const MIME_EXTENSION_MAP = {
 
 const ALLOWED_MIMETYPES = new Set(Object.keys(MIME_EXTENSION_MAP))
 
+// Fallback directory for serverless environments where the configured
+// upload directory might be on a read-only filesystem.
+const FALLBACK_UPLOAD_DIR = '/tmp/uploads'
+
+// Lazily ensure the upload directory exists. This avoids top-level await that
+// crashes on Vercel's read-only filesystem during module import.
+// If the configured directory fails (e.g., read-only on Vercel), fall back to /tmp.
+let uploadDirReady = false
+let activeUploadDir = ''
+async function ensureUploadDir() {
+  if (uploadDirReady) return activeUploadDir
+
+  const tryDir = async (dir) => {
+    await fs.mkdir(dir, { recursive: true })
+    await fs.access(dir, fs.constants.W_OK)
+    return dir
+  }
+
+  try {
+    activeUploadDir = await tryDir(env.uploads.dir)
+  } catch (err) {
+    logger.warn(`[multer] Cannot use upload dir ${env.uploads.dir}: ${err.message}. Falling back to ${FALLBACK_UPLOAD_DIR}`)
+    try {
+      activeUploadDir = await tryDir(FALLBACK_UPLOAD_DIR)
+    } catch (fallbackErr) {
+      throw new Error(`No writable upload directory available: ${fallbackErr.message}`)
+    }
+  }
+
+  uploadDirReady = true
+  return activeUploadDir
+}
+
 const storage = multer.diskStorage({
-  destination(req, file, cb) {
-    cb(null, uploadRoot)
+  destination: async (req, file, cb) => {
+    try {
+      const dir = await ensureUploadDir()
+      cb(null, dir)
+    } catch (err) {
+      cb(err)
+    }
   },
   filename(req, file, cb) {
     const extension = MIME_EXTENSION_MAP[file.mimetype]

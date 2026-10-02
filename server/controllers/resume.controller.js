@@ -9,6 +9,7 @@ import { asyncHandler } from '../utils/asyncHandler.js'
 import { sendSuccess } from '../utils/ApiResponse.js'
 import { ApiError } from '../utils/ApiError.js'
 import { logger } from '../utils/logger.js'
+import { env } from '../config/env.js'
 
 const TEXT_PREVIEW_LENGTH = 500
 
@@ -20,6 +21,20 @@ async function findOwnedResume(id, userId) {
   const objectId = toValidObjectId(id)
   if (!objectId) return null
   return Resume.findOne({ _id: objectId, user: userId })
+}
+
+// Best-effort cleanup of a temporary uploaded file. On Vercel, /tmp is
+// ephemeral so we clean up after extraction. On local dev, files in
+// server/uploads are preserved for debugging.
+async function cleanupTempFile(filePath) {
+  if (!filePath) return
+  try {
+    await fs.unlink(filePath)
+  } catch (err) {
+    if (err?.code !== 'ENOENT') {
+      logger.warn(`[resume] could not remove temp file ${filePath}: ${err?.message}`)
+    }
+  }
 }
 
 export const uploadResume = asyncHandler(async (req, res) => {
@@ -56,6 +71,12 @@ export const uploadResume = asyncHandler(async (req, res) => {
   }
 
   await resume.save()
+
+  // Clean up the temporary uploaded file after extraction.
+  // The extracted text is stored in MongoDB, so the file is no longer needed.
+  // On Vercel, /tmp is ephemeral and must be cleaned. On local dev, we also
+  // clean up to avoid filling disk, but the uploads dir persists if needed.
+  await cleanupTempFile(file.path)
 
   const completed = resume.extractionStatus === EXTRACTION_STATUS.COMPLETED
 

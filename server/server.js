@@ -15,7 +15,7 @@ import resumeRoutes from './routes/resume.routes.js'
 import jobRoutes from './routes/job.routes.js'
 
 import { connectDB, disconnectDB, getDbStatus } from './config/db.js'
-import { env, isProduction } from './config/env.js'
+import { env, isProduction, isVercel } from './config/env.js'
 import { logger } from './utils/logger.js'
 
 const app = express()
@@ -60,9 +60,11 @@ async function start() {
     logger.warn('[server] Starting without a database connection. Auth requests will fail until MONGODB_URI is set.')
   }
 
-  server = app.listen(env.port, () => {
-    logger.info(`[server] CVision AI API listening on http://localhost:${env.port}`)
-  })
+  if (!isVercel) {
+    server = app.listen(env.port, () => {
+      logger.info(`[server] CVision AI API listening on http://localhost:${env.port}`)
+    })
+  }
 }
 
 async function shutdown(signal) {
@@ -70,25 +72,27 @@ async function shutdown(signal) {
   try {
     if (server) await new Promise((resolve) => server.close(resolve))
     await disconnectDB()
-    process.exit(0)
+    if (!isVercel) process.exit(0)
   } catch (err) {
     logger.error('[server] Error during shutdown', { message: err.message })
-    process.exit(1)
+    if (!isVercel) process.exit(1)
   }
 }
 
-process.on('SIGINT', () => shutdown('SIGINT'))
-process.on('SIGTERM', () => shutdown('SIGTERM'))
+if (!isVercel) {
+  process.on('SIGINT', () => shutdown('SIGINT'))
+  process.on('SIGTERM', () => shutdown('SIGTERM'))
 
-process.on('unhandledRejection', (reason) => {
-  logger.error('[server] Unhandled promise rejection', { message: reason?.message ?? String(reason) })
-})
+  process.on('unhandledRejection', (reason) => {
+    logger.error('[server] Unhandled promise rejection', { message: reason?.message ?? String(reason) })
+  })
 
-process.on('uncaughtException', (err) => {
-  logger.error('[server] Uncaught exception', { message: err.message })
-  shutdown('uncaughtException')
-})
+  process.on('uncaughtException', (err) => {
+    logger.error('[server] Uncaught exception', { message: err.message })
+    shutdown('uncaughtException')
+  })
 
-start()
+  start()
+}
 
 export default app

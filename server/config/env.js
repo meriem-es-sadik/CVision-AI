@@ -12,6 +12,16 @@ const serverRoot = path.resolve(__dirname, '..')
 dotenv.config({ path: path.resolve(serverRoot, '.env') })
 dotenv.config()
 
+// Detect Vercel serverless environment. Vercel sets multiple indicators:
+const isVercel = process.env.VERCEL === '1' || !!process.env.VERCEL_ENV || !!process.env.AWS_REGION
+
+// On Vercel, use /tmp for writable temporary file storage. The /var/task
+// application directory is read-only. For local development, use the server/uploads
+// directory so files persist across restarts for debugging.
+const uploadDir = isVercel
+  ? '/tmp/uploads'
+  : path.resolve(serverRoot, process.env.UPLOAD_DIR || 'uploads')
+
 export const env = {
   nodeEnv: process.env.NODE_ENV || 'development',
   port: Number(process.env.PORT) || 5000,
@@ -52,9 +62,13 @@ export const env = {
   },
 
   uploads: {
-    dir: path.resolve(serverRoot, process.env.UPLOAD_DIR || 'uploads'),
+    dir: uploadDir,
     maxFileSizeBytes: (Number(process.env.MAX_FILE_SIZE_MB) || 5) * 1024 * 1024,
   },
+
+  isVercel,
 }
+
+export { isVercel }
 
 export const isProduction = env.nodeEnv === 'production'
