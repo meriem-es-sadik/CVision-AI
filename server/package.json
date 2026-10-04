@@ -11,6 +11,7 @@
   "scripts": {
     "dev": "nodemon server.js",
     "start": "node server.js",
+    "build": "echo \"Server does not require a build step\"",
     "test": "node scripts/analysis.smoke.test.js",
     "test:integration": "node scripts/analysis.integration.test.js",
     "seed": "node -e \"console.log('seed script not implemented yet')\""
