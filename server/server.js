@@ -84,15 +84,23 @@ if (!isVercel) {
   process.on('SIGTERM', () => shutdown('SIGTERM'))
 
   process.on('unhandledRejection', (reason) => {
-    logger.error('[server] Unhandled promise rejection', { message: reason?.message ?? String(reason) })
+    logger.error('[server] Unhandled promise rejection', {
+      message: reason?.message ?? String(reason),
+    })
   })
 
   process.on('uncaughtException', (err) => {
     logger.error('[server] Uncaught exception', { message: err.message })
     shutdown('uncaughtException')
   })
+}
 
-  start()
+await connectDB()
+
+if (!isVercel) {
+  server = app.listen(env.port, () => {
+    logger.info(`[server] CVision AI API listening on http://localhost:${env.port}`)
+  })
 }
 
 export default app
