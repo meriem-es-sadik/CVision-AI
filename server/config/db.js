@@ -1,13 +1,22 @@
 import mongoose from 'mongoose'
 
-import { env } from './env.js'
+import { env, isVercel, assertMongoConfig } from './env.js'
 import { logger } from '../utils/logger.js'
 
-const SERVER_SELECTION_TIMEOUT_MS = 10_000
+// A Vercel function invocation is short-lived, so Atlas gets less time to
+// respond there. A clear error inside the function's budget beats a platform
+// timeout that hides the cause.
+const SERVER_SELECTION_TIMEOUT_MS = isVercel ? 5_000 : 10_000
 
 mongoose.set('strictQuery', true)
 
 let listenersRegistered = false
+
+// The single in-flight connection attempt, shared by concurrent requests so a
+// cold start opens exactly one connection. Cleared on failure and on
+// disconnect so the next request starts a fresh attempt instead of reusing a
+// rejected or stale promise.
+let pendingConnection = null
 
 /**
  * The driver can include the full connection string in error messages, which would
@@ -25,6 +34,7 @@ function registerConnectionListeners() {
     logger.error('[db] MongoDB connection error', { message: redactCredentials(err?.message) })
   })
   mongoose.connection.on('disconnected', () => {
+    pendingConnection = null
     logger.warn('[db] MongoDB disconnected')
   })
   mongoose.connection.on('reconnected', () => {
@@ -50,42 +60,43 @@ export function isDbConnected() {
 }
 
 /**
- * Opens the shared Mongoose connection using MONGODB_URI from server/.env.
- * Throws a descriptive error when the URI is missing or the server is unreachable.
+ * Opens the shared Mongoose connection using MONGODB_URI.
+ *
+ * Throws a MongoConfigError (a clear configuration error) when production has
+ * no usable URI — this is checked before any connection attempt, so production
+ * can never fall back to 127.0.0.1. Transient connection failures are logged,
+ * not cached, and are retried on the next call.
  */
 export async function connectDB() {
-  if (!env.mongoUri) {
-    const error = new Error(
-      'MONGODB_URI is not set. Copy server/.env.example to server/.env and fill in your MongoDB connection string.',
-    )
-    error.code = 'MONGODB_URI_MISSING'
-    throw error
-  }
+  assertMongoConfig()
 
-  if (isDbConnected()) {
-    logger.info('[db] MongoDB already connected')
-    return mongoose.connection
-  }
+  if (isDbConnected()) return mongoose.connection
 
   registerConnectionListeners()
 
-  try {
-    const connection = await mongoose.connect(env.mongoUri, {
-      serverSelectionTimeoutMS: SERVER_SELECTION_TIMEOUT_MS,
-    })
-
-    const { host, name } = connection.connection
-    logger.info(`[db] MongoDB connected: ${host}/${name}`)
-
-    return connection
-  } catch (err) {
-    logger.error('[db] Could not connect to MongoDB', { message: redactCredentials(err?.message) })
-    throw err
+  if (!pendingConnection) {
+    pendingConnection = mongoose
+      .connect(env.mongoUri, {
+        serverSelectionTimeoutMS: SERVER_SELECTION_TIMEOUT_MS,
+      })
+      .then((connection) => {
+        const { host, name } = connection.connection
+        logger.info(`[db] MongoDB connected: ${host}/${name}`)
+        return connection
+      })
+      .catch((err) => {
+        pendingConnection = null
+        logger.error('[db] Could not connect to MongoDB', { message: redactCredentials(err?.message) })
+        throw err
+      })
   }
+
+  return pendingConnection
 }
 
 export async function disconnectDB() {
   if (mongoose.connection.readyState === 0) return
   await mongoose.connection.close()
+  pendingConnection = null
   logger.info('[db] MongoDB connection closed')
 }

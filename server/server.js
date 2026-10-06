@@ -15,7 +15,7 @@ import resumeRoutes from './routes/resume.routes.js'
 import jobRoutes from './routes/job.routes.js'
 
 import { connectDB, disconnectDB, getDbStatus } from './config/db.js'
-import { env, isProduction, isVercel } from './config/env.js'
+import { env, isVercel } from './config/env.js'
 import { logger } from './utils/logger.js'
 
 const app = express()
@@ -30,56 +30,65 @@ app.use(cookieParser())
 app.use(morgan('dev'))
 app.use('/api', apiLimiter)
 
+// Health check
 app.get('/api/health', (req, res) => {
   res.status(200).json({
     success: true,
     message: 'CVision AI API is running',
-    data: { uptime: process.uptime(), env: env.nodeEnv, database: getDbStatus() },
+    data: {
+      uptime: process.uptime(),
+      env: env.nodeEnv,
+      database: getDbStatus(),
+    },
   })
 })
 
+// API routes
 app.use('/api/auth', authRoutes)
 app.use('/api/resumes', resumeRoutes)
 app.use('/api/analysis', analysisRoutes)
 app.use('/api/jobs', jobRoutes)
 
+// Error handlers
 app.use(notFoundHandler)
 app.use(errorHandler)
 
 let server
 
-async function start() {
+// Local development only.
+// Vercel imports and executes the Express app as a serverless function.
+if (!isVercel) {
   try {
     await connectDB()
-  } catch (err) {
-    // In production the API is useless without a database, so fail fast.
-    // In development the process still boots so /api/health and the frontend
-    // remain reachable while the connection string is being configured.
-    logger.error(`[server] Database unavailable: ${err.message}`)
-    if (isProduction) process.exit(1)
-    logger.warn('[server] Starting without a database connection. Auth requests will fail until MONGODB_URI is set.')
-  }
 
-  if (!isVercel) {
     server = app.listen(env.port, () => {
-      logger.info(`[server] CVision AI API listening on http://localhost:${env.port}`)
+      logger.info(
+        `[server] CVision AI API listening on http://localhost:${env.port}`
+      )
     })
-  }
-}
-
-async function shutdown(signal) {
-  logger.info(`[server] ${signal} received, shutting down`)
-  try {
-    if (server) await new Promise((resolve) => server.close(resolve))
-    await disconnectDB()
-    if (!isVercel) process.exit(0)
   } catch (err) {
-    logger.error('[server] Error during shutdown', { message: err.message })
-    if (!isVercel) process.exit(1)
+    logger.error(`[server] Database unavailable: ${err.message}`)
+    process.exit(1)
   }
-}
 
-if (!isVercel) {
+  const shutdown = async (signal) => {
+    logger.info(`[server] ${signal} received, shutting down`)
+
+    try {
+      if (server) {
+        await new Promise((resolve) => server.close(resolve))
+      }
+
+      await disconnectDB()
+      process.exit(0)
+    } catch (err) {
+      logger.error('[server] Error during shutdown', {
+        message: err.message,
+      })
+      process.exit(1)
+    }
+  }
+
   process.on('SIGINT', () => shutdown('SIGINT'))
   process.on('SIGTERM', () => shutdown('SIGTERM'))
 
@@ -90,16 +99,10 @@ if (!isVercel) {
   })
 
   process.on('uncaughtException', (err) => {
-    logger.error('[server] Uncaught exception', { message: err.message })
+    logger.error('[server] Uncaught exception', {
+      message: err.message,
+    })
     shutdown('uncaughtException')
-  })
-}
-
-await connectDB()
-
-if (!isVercel) {
-  server = app.listen(env.port, () => {
-    logger.info(`[server] CVision AI API listening on http://localhost:${env.port}`)
   })
 }
 
