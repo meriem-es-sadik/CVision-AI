@@ -2,7 +2,7 @@
 
 **AI CV Analyzer & Smart Job Matcher**
 
-Monorepo (npm workspaces) with an Express/MongoDB API and a React/Vite frontend.
+Two standalone apps that talk over HTTP — no workspace tooling, each runs in its own terminal:
 
 - **Backend** `server/` — Node.js, Express, MongoDB Atlas, JWT, bcrypt, Multer, OpenRouter
 - **Frontend** `client/` — React, Vite, JSX, Tailwind CSS, shadcn/ui, Magic UI, Lucide, Axios, Recharts
@@ -13,38 +13,62 @@ Monorepo (npm workspaces) with an Express/MongoDB API and a React/Vite frontend.
 
 ## Requirements
 
-- Node.js >= 20.19 (uses npm workspaces)
+- Node.js >= 20.19
 - A MongoDB Atlas cluster
 - An OpenRouter API key from <https://openrouter.ai/keys> (the default model is the free `openrouter/free` router)
 
 ## Setup
 
 ```bash
-npm install
+# install each app's dependencies separately
+cd server && npm install
+cd client && npm install
 
 # copy env files and fill in your own credentials
 copy server\.env.example server\.env
 copy client\.env.example client\.env
 ```
 
-## Scripts
+## Running locally (two terminals)
 
-| Command             | Description                              |
-| ------------------- | ---------------------------------------- |
-| `npm run dev`       | Runs server + client together            |
-| `npm run dev:server`| API only, with nodemon reload            |
-| `npm run dev:client`| Vite dev server only                     |
-| `npm run build`     | Production build of the client           |
-| `npm run start`     | Runs the API in production mode          |
-| `npm run lint`      | ESLint on the client                     |
+```bash
+# terminal 1 - API on http://localhost:5000
+cd server
+npm run dev
 
-The client dev server proxies `/api` to `http://localhost:5000`.
+# terminal 2 - frontend on http://localhost:5173
+cd client
+npm run dev
+```
+
+| Command                | Where    | Description                          |
+| ---------------------- | -------- | ------------------------------------ |
+| `npm run dev`          | `server/`| API with nodemon reload              |
+| `npm run start`        | `server/`| API in production mode               |
+| `npm test`             | `server/`| Server smoke tests                   |
+| `npm run dev`          | `client/`| Vite dev server                      |
+| `npm run build`        | `client/`| Production build of the frontend     |
+| `npm run lint`         | `client/`| ESLint                               |
+
+`client/.env` points `VITE_API_URL` at `http://localhost:5000/api` (direct calls, CORS via
+`CLIENT_URL`). If you leave `VITE_API_URL` unset instead, requests go to the relative `/api`
+prefix and the Vite dev server proxies them to `http://localhost:5000` (see `vite.config.js`).
+
+## Deployment (separate hosts)
+
+- **Client → Vercel**: import the repo and set *Root Directory* to `client`.
+  Build command `npm run build`, output `dist` (auto-detected). `client/vercel.json` adds the
+  SPA fallback so refreshing a client-side route (`/login`, ...) does not 404.
+  Set `VITE_API_URL` in `client/.env.production` to your deployed server URL + `/api` before building.
+- **Server → Render / Railway / Fly.io / VPS**: run `npm start` (or `node server.js`) with the
+  environment variables `NODE_ENV=production`, `PORT`, `MONGODB_URI` (Atlas), `JWT_SECRET`,
+  `CLIENT_URL` (the deployed client origin, for CORS) and `OPENROUTER_API_KEY`.
+  A localhost `MONGODB_URI` is rejected at startup in production.
 
 ## Structure
 
 ```
 CVision-AI/
-├── package.json              # npm workspaces root
 ├── .gitignore
 │
 ├── server/
@@ -62,6 +86,7 @@ CVision-AI/
 └── client/
     ├── index.html
     ├── vite.config.js        # React + Tailwind v4 plugin, @ alias, /api proxy
+    ├── vercel.json           # SPA fallback when deployed alone
     ├── components.json       # shadcn/ui config
     ├── eslint.config.js
     ├── jsconfig.json
