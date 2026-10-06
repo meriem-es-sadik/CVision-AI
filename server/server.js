@@ -15,7 +15,7 @@ import resumeRoutes from './routes/resume.routes.js'
 import jobRoutes from './routes/job.routes.js'
 
 import { connectDB, disconnectDB, getDbStatus } from './config/db.js'
-import { env, isVercel } from './config/env.js'
+import { env, isProduction, isVercel } from './config/env.js'
 import { logger } from './utils/logger.js'
 
 const app = express()
@@ -30,65 +30,78 @@ app.use(cookieParser())
 app.use(morgan('dev'))
 app.use('/api', apiLimiter)
 
-// Health check
 app.get('/api/health', (req, res) => {
   res.status(200).json({
     success: true,
     message: 'CVision AI API is running',
-    data: {
-      uptime: process.uptime(),
-      env: env.nodeEnv,
-      database: getDbStatus(),
-    },
+    data: { uptime: process.uptime(), env: env.nodeEnv, database: getDbStatus() },
   })
 })
 
-// API routes
+// Everything below needs the database. On Vercel this runs per request: it is
+// a no-op once connected, retries a cold start that failed on a transient
+// error, and turns configuration errors (missing or localhost MONGODB_URI)
+// into a clear JSON response instead of an opaque driver failure.
+function ensureDb(req, res, next) {
+  connectDB().then(() => next(), next)
+}
+
+app.use('/api', ensureDb)
+
 app.use('/api/auth', authRoutes)
 app.use('/api/resumes', resumeRoutes)
 app.use('/api/analysis', analysisRoutes)
 app.use('/api/jobs', jobRoutes)
 
-// Error handlers
 app.use(notFoundHandler)
 app.use(errorHandler)
 
 let server
 
-// Local development only.
-// Vercel imports and executes the Express app as a serverless function.
-if (!isVercel) {
+async function start() {
   try {
     await connectDB()
-
-    server = app.listen(env.port, () => {
-      logger.info(
-        `[server] CVision AI API listening on http://localhost:${env.port}`
-      )
-    })
   } catch (err) {
+    // Configuration errors never heal by retrying: fail fast with the
+    // operator-facing message that names the environment variable to fix.
+    if (err?.code === 'MONGODB_CONFIG_ERROR') throw err
+
     logger.error(`[server] Database unavailable: ${err.message}`)
-    process.exit(1)
-  }
 
-  const shutdown = async (signal) => {
-    logger.info(`[server] ${signal} received, shutting down`)
-
-    try {
-      if (server) {
-        await new Promise((resolve) => server.close(resolve))
-      }
-
-      await disconnectDB()
-      process.exit(0)
-    } catch (err) {
-      logger.error('[server] Error during shutdown', {
-        message: err.message,
-      })
+    if (isProduction && !isVercel) {
+      // Long-running process: without a database the API is useless.
       process.exit(1)
+    }
+
+    if (isVercel) {
+      // Never exit a serverless container: ensureDb() retries the connection
+      // when the next request arrives.
+      logger.warn('[server] MongoDB unreachable at cold start; the connection is retried on the next request.')
+    } else {
+      logger.warn('[server] Starting without a database connection. Auth requests will fail until MONGODB_URI is set.')
     }
   }
 
+  if (!isVercel) {
+    server = app.listen(env.port, () => {
+      logger.info(`[server] CVision AI API listening on http://localhost:${env.port}`)
+    })
+  }
+}
+
+async function shutdown(signal) {
+  logger.info(`[server] ${signal} received, shutting down`)
+  try {
+    if (server) await new Promise((resolve) => server.close(resolve))
+    await disconnectDB()
+    if (!isVercel) process.exit(0)
+  } catch (err) {
+    logger.error('[server] Error during shutdown', { message: err.message })
+    if (!isVercel) process.exit(1)
+  }
+}
+
+if (!isVercel) {
   process.on('SIGINT', () => shutdown('SIGINT'))
   process.on('SIGTERM', () => shutdown('SIGTERM'))
 
@@ -99,11 +112,16 @@ if (!isVercel) {
   })
 
   process.on('uncaughtException', (err) => {
-    logger.error('[server] Uncaught exception', {
-      message: err.message,
-    })
+    logger.error('[server] Uncaught exception', { message: err.message })
     shutdown('uncaughtException')
   })
+}
+
+try {
+  await start()
+} catch (err) {
+  logger.error(`[server] Fatal: ${err.message}`)
+  throw err
 }
 
 export default app

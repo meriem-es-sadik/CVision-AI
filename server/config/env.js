@@ -107,6 +107,37 @@ export class MongoConfigError extends Error {
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0'])
 
 /**
+ * Extracts the hosts from a MongoDB connection string without using URL(),
+ * because standard mongodb:// URIs may list several comma-separated hosts
+ * (host1:27017,host2:27017) which WHATWG URL parsing rejects.
+ * Returns null when the string is not a mongodb://(srv) URI.
+ */
+function parseMongoHosts(uri) {
+  const match = /^mongodb(\+srv)?:\/\/(.*)$/i.exec(uri)
+  if (!match) return null
+
+  const authority = match[2].split(/[/?#]/, 1)[0]
+  const hostList = authority.slice(authority.lastIndexOf('@') + 1)
+
+  const hosts = hostList
+    .split(',')
+    .map((entry) => {
+      let host = entry.trim()
+      if (host.startsWith('[')) {
+        const end = host.indexOf(']')
+        host = end === -1 ? host : host.slice(0, end + 1)
+      } else {
+        const colon = host.lastIndexOf(':')
+        if (colon !== -1) host = host.slice(0, colon)
+      }
+      return host.toLowerCase()
+    })
+    .filter(Boolean)
+
+  return hosts.length > 0 ? hosts : null
+}
+
+/**
  * Validates the MongoDB configuration before any connection attempt.
  *
  * Development always passes: MONGODB_URI may be unset there, in which case the
@@ -126,14 +157,8 @@ export function assertMongoConfig() {
     )
   }
 
-  let hostname
-  try {
-    const parsed = new URL(mongoUri)
-    if (parsed.protocol !== 'mongodb:' && parsed.protocol !== 'mongodb+srv:') {
-      throw new Error(`unsupported protocol: ${parsed.protocol}`)
-    }
-    hostname = parsed.hostname.toLowerCase()
-  } catch {
+  const hosts = parseMongoHosts(mongoUri)
+  if (!hosts) {
     throw new MongoConfigError(
       'MONGODB_URI is not a valid MongoDB connection string. Expected ' +
         'mongodb+srv://user:password@cluster.mongodb.net/database (MongoDB Atlas) or ' +
@@ -141,9 +166,10 @@ export function assertMongoConfig() {
     )
   }
 
-  if (LOOPBACK_HOSTS.has(hostname)) {
+  const loopback = hosts.filter((host) => LOOPBACK_HOSTS.has(host))
+  if (loopback.length > 0) {
     throw new MongoConfigError(
-      `MONGODB_URI points to "${hostname}", a local MongoDB server. There is no local ` +
+      `MONGODB_URI points to "${loopback[0]}", a local MongoDB server. There is no local ` +
         'MongoDB on Vercel, so every request fails with ECONNREFUSED 127.0.0.1:27017. ' +
         'Replace MONGODB_URI with your MongoDB Atlas connection string (mongodb+srv://...) ' +
         'in Vercel under Project Settings > Environment Variables, then redeploy.',
