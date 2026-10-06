@@ -2,8 +2,14 @@ import axios from 'axios'
 
 import { getToken, notifyUnauthorized } from '@/services/tokenStore'
 
+// API origin, provided by VITE_API_URL (e.g. https://your-api-host.example.com).
+// Must be the origin ONLY, without a trailing /api - the /api prefix is added
+// here so every request resolves to ${VITE_API_URL}/api/<endpoint>.
+// Falls back to the local dev server only when the variable is not set.
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000'
+
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || '/api',
+  baseURL: `${API_URL}/api`,
   withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
